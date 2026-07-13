@@ -66,33 +66,30 @@ else
   fi
 fi
 
-# Detect DNS resolver to use - Railway uses IPv6 DNS for private networking
-DNS_RESOLVER="127.0.0.11 8.8.8.8 8.8.4.4"
-
-# Check if we're in Railway (or similar container platform with internal DNS)
+# Detect DNS resolvers from the container DNS configuration.
+DNS_RESOLVER=""
 if [[ -f /etc/resolv.conf ]]; then
-  # Process nameservers and format IPv6 addresses correctly for nginx
+  # Process nameservers and format IPv6 addresses correctly for nginx.
   FORMATTED_NAMESERVERS=""
   while IFS= read -r nameserver; do
     if [[ -n "$nameserver" ]]; then
-      # Check if it's an IPv6 address (contains colons)
       if [[ "$nameserver" == *":"* ]]; then
-        # IPv6 addresses need brackets in nginx resolver directive
-        FORMATTED_NAMESERVERS="$FORMATTED_NAMESERVERS [$nameserver]"
+        FORMATTED_NAMESERVERS="${FORMATTED_NAMESERVERS:+$FORMATTED_NAMESERVERS }[$nameserver]"
       else
-        # IPv4 addresses don't need brackets
-        FORMATTED_NAMESERVERS="$FORMATTED_NAMESERVERS $nameserver"
+        FORMATTED_NAMESERVERS="${FORMATTED_NAMESERVERS:+$FORMATTED_NAMESERVERS }$nameserver"
       fi
     fi
-  done <<< "$(grep '^nameserver' /etc/resolv.conf | awk '{print $2}')"
+  done <<< "$(awk '$1 == "nameserver" {print $2}' /etc/resolv.conf)"
   
   if [[ -n "$FORMATTED_NAMESERVERS" ]]; then
-    # Use system nameservers first, then fallback to public DNS
-    DNS_RESOLVER="$FORMATTED_NAMESERVERS 8.8.8.8 8.8.4.4"
+    DNS_RESOLVER="$FORMATTED_NAMESERVERS"
     echo "[entrypoint] Using system DNS resolvers: $FORMATTED_NAMESERVERS"
-  else
-    echo "[entrypoint] No system nameservers found, using default resolvers"
   fi
+fi
+
+if [[ -z "$DNS_RESOLVER" ]]; then
+  echo "[entrypoint] ERROR: no nameservers found in /etc/resolv.conf"
+  exit 1
 fi
 
 # Render nginx config from template with envsubst
@@ -111,17 +108,18 @@ if [[ ! -f /etc/nginx/conf.d/reverse.conf || ! -s /etc/nginx/conf.d/reverse.conf
   exit 1
 fi
 
+# Remove the default nginx configuration before testing, so nginx -t validates
+# the exact configuration that will be used when nginx starts.
+if [[ -f /etc/nginx/conf.d/default.conf ]]; then
+  echo "[entrypoint] Removing default nginx configuration..."
+  rm /etc/nginx/conf.d/default.conf
+fi
+
 # Test nginx configuration syntax
 echo "[entrypoint] Testing nginx configuration..."
 if ! nginx -t; then
   echo "[entrypoint] ERROR: Invalid nginx configuration"
   exit 1
-fi
-
-# Remove the default nginx configuration to avoid conflicts
-if [[ -f /etc/nginx/conf.d/default.conf ]]; then
-  echo "[entrypoint] Removing default nginx configuration..."
-  rm /etc/nginx/conf.d/default.conf
 fi
 
 echo "[entrypoint] Generated /etc/nginx/conf.d/reverse.conf with ORIGIN=$ORIGIN"
